@@ -139,6 +139,9 @@ def build_analysis_list(config, refConfig):  # {{{
     analyses.append(ocean.GeojsonTransects(config, oceanClimatolgyTask,
                                            refConfig))
 
+    analyses.append(ocean.OceanRegionalProfiles(config, oceanTimeSeriesTask,
+                                                refConfig))
+
     # Sea Ice Analyses
     seaIceClimatolgyTask = MpasClimatologyTask(config=config,
                                                componentName='seaIce')
@@ -229,7 +232,8 @@ def add_task_and_subtasks(analysisTask, analysesToGenerate,
         if analysisTask._setupStatus != 'success':
             ValueError("task {} already added but this version was not set up "
                        "successfully. Typically, this indicates two tasks "
-                       "with the same full name".format(analysisTask.fullName))
+                       "with the same full name".format(
+                               analysisTask.fullTaskName))
         return
 
     # for each anlaysis task, check if we want to generate this task
@@ -346,7 +350,7 @@ def run_analysis(config, analyses):  # {{{
     configFile.close()
 
     parallelTaskCount = config.getWithDefault('execute', 'parallelTaskCount',
-                                      default=1)
+                                              default=1)
 
     isParallel = parallelTaskCount > 1 and len(analyses) > 1
 

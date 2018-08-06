@@ -1622,6 +1622,38 @@ normArgsDifference = {'vmin': -0.2, 'vmax': 0.2}
 contourLevelsDifference = numpy.linspace(-0.2, 0.2, 9)
 
 
+[oceanRegionalProfiles]
+## options related to plotting vertical profiles of regional means (and
+## variability) of 3D MPAS fields
+
+# a list of dictionaries for each field to plot.  The dictionary includes
+# prefix (used for file names, task names and sections) as well as the mpas
+# name of the field, units for colorbars and a the name as it should appear
+# in figure titles and captions.
+fields =
+    [{'prefix': 'temperature',
+      'mpas': 'timeMonthly_avg_activeTracers_temperature',
+      'units': r'$\degree$C',
+      'titleName': 'Potential Temperature'},
+     {'prefix': 'salinity',
+      'mpas': 'timeMonthly_avg_activeTracers_salinity',
+      'units': r'PSU',
+      'titleName': 'Salinity'},
+     {'prefix': 'potentialDensity',
+      'mpas': 'timeMonthly_avg_potentialDensity',
+      'units': r'kg m$^{-3}$',
+      'titleName': 'Potential Density'}]
+
+# Times for comparison times (Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct,
+# Nov, Dec, JFM, AMJ, JAS, OND, ANN)
+seasons =  ['JFM', 'JAS', 'ANN']
+
+# The suffix on the regional mask file to be used to determine the regions to
+# plot.  A region mask file should be in the regionMaskDirectory and should
+# be named <mpasMeshName>_<regionMaskSuffix>.nc
+regionMaskSuffix = ocean_basin_masks
+
+
 [climatologyMapSeaIceConcNH]
 ## options related to plotting horizontally remapped climatologies of
 ## sea ice concentration against reference model results and observations
