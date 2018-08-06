@@ -11,9 +11,7 @@
 from __future__ import absolute_import, division, print_function, \
     unicode_literals
 
-import os
 import xarray
-import numpy
 
 from mpas_analysis.shared.analysis_task import AnalysisTask
 
@@ -21,10 +19,10 @@ from mpas_analysis.shared.constants import constants
 
 from mpas_analysis.shared.plot.plotting import timeseries_analysis_plot
 
-from mpas_analysis.shared.io import open_mpas_dataset, write_netcdf
-
 from mpas_analysis.shared.io.utility import build_config_full_path, \
     make_directories
+
+from mpas_analysis.shared.time_series import MpasTimeSeriesRegionalStatsSubtask
 
 from mpas_analysis.shared.html import write_image_xml
 
@@ -78,6 +76,14 @@ class TimeSeriesAntarcticMelt(AnalysisTask):
 
         self.mpasTimeSeriesTask = mpasTimeSeriesTask
 
+        self.regionalStatsSubtask = RegionalStatsAntarcticMelt(
+                mpasTimeSeriesTask, self,
+                timeSeriesName='iceShelfAggregatedFluxes',
+                regionMaskSuffix='iceShelfMasks',
+                mpasVariables=['timeMonthly_avg_landIceFreshwaterFlux'],
+                statsList=['sum', 'mean'],
+                refConfig=refConfig)
+
         self.run_after(mpasTimeSeriesTask)
         self.refConfig = refConfig
 
@@ -102,10 +108,6 @@ class TimeSeriesAntarcticMelt(AnalysisTask):
         #   self.calendar
         super(TimeSeriesAntarcticMelt, self).setup_and_check()
 
-        self.check_analysis_enabled(
-            analysisOptionName='config_am_timeseriesstatsmonthly_enable',
-            raiseException=True)
-
         config = self.config
 
         landIceFluxMode = self.namelist.get('config_land_ice_flux_mode')
@@ -116,39 +118,17 @@ class TimeSeriesAntarcticMelt(AnalysisTask):
                              'melt rates are available \n'
                              '    for plotting.')
 
-        mpasMeshName = config.get('input', 'mpasMeshName')
-        regionMaskDirectory = config.get('regions', 'regionMaskDirectory')
-
-        self.regionMaskFileName = '{}/{}_iceShelfMasks.nc'.format(
-                regionMaskDirectory, mpasMeshName)
-
-        if not os.path.exists(self.regionMaskFileName):
-            raise IOError('Regional masking file {} for Antarctica melt-rate '
-                          'calculation does not exist'.format(
-                                  self.regionMaskFileName))
-
-        # Load mesh related variables
-        try:
-            self.restartFileName = self.runStreams.readpath('restart')[0]
-        except ValueError:
-            raise IOError('No MPAS-O restart file found: need at least one '
-                          'restart file for Antarctic melt calculations')
-
-        # get a list of timeSeriesStats output files from the streams file,
-        # reading only those that are between the start and end dates
-        self.startDate = config.get('timeSeries', 'startDate')
-        self.endDate = config.get('timeSeries', 'endDate')
-
-        self.outFileName = 'iceShelfAggregatedFluxes.nc'
-
-        self.variableList = \
-            ['timeMonthly_avg_landIceFreshwaterFlux']
-        self.mpasTimeSeriesTask.add_variables(variableList=self.variableList)
-
         iceShelvesToPlot = config.getExpression('timeSeriesAntarcticMelt',
                                                 'iceShelvesToPlot')
 
-        with xarray.open_dataset(self.regionMaskFileName) as dsRegionMask:
+        mpasMeshName = config.get('input', 'mpasMeshName')
+        regionMaskDirectory = config.get('regions', 'regionMaskDirectory')
+
+        regionMaskFileName = '{}/{}_{}.nc'.format(
+                regionMaskDirectory, mpasMeshName,
+                self.regionalStatsSubtask.regionMaskSuffix)
+
+        with xarray.open_dataset(regionMaskFileName) as dsRegionMask:
             regionNames = [bytes.decode(name) for name in
                            dsRegionMask.regionNames.values]
             nRegions = dsRegionMask.dims['nRegions']
@@ -195,7 +175,8 @@ class TimeSeriesAntarcticMelt(AnalysisTask):
         config = self.config
         calendar = self.calendar
 
-        totalMeltFlux, meltRates = self._compute_ice_shelf_fluxes()
+        totalMeltFlux, meltRates = \
+            self._load_ice_shelf_fluxes(self.config)
 
         plotRef = self.refConfig is not None
         if plotRef:
@@ -383,99 +364,6 @@ class TimeSeriesAntarcticMelt(AnalysisTask):
                 imageCaption=caption)
         # }}}
 
-    def _compute_ice_shelf_fluxes(self):  # {{{
-        """
-        Reads melt flux time series and computes regional total melt flux and
-        mean melt rate.
-        """
-        # Authors
-        # -------
-        # Xylar Asay-Davis, Stephen Price
-
-        mpasTimeSeriesTask = self.mpasTimeSeriesTask
-        config = self.config
-
-        baseDirectory = build_config_full_path(
-            config, 'output', 'timeSeriesSubdirectory')
-
-        outFileName = '{}/{}'.format(baseDirectory, self.outFileName)
-
-        # Load data:
-        inputFile = mpasTimeSeriesTask.outputFile
-        dsIn = open_mpas_dataset(fileName=inputFile,
-                                 calendar=self.calendar,
-                                 variableList=self.variableList,
-                                 startDate=self.startDate,
-                                 endDate=self.endDate)
-        try:
-            if os.path.exists(outFileName):
-                # The file already exists so load it
-                dsOut = xarray.open_dataset(outFileName)
-                if numpy.all(dsOut.Time.values == dsIn.Time.values):
-                    return dsOut.totalMeltFlux, dsOut.meltRates
-                else:
-                    self.logger.warning('File {} is incomplete. Deleting '
-                                        'it.'.format(outFileName))
-                    os.remove(outFileName)
-        except OSError:
-            # something is potentailly wrong with the file, so let's delete
-            # it and try again
-            self.logger.warning('Problems reading file {}. Deleting '
-                                'it.'.format(outFileName))
-            os.remove(outFileName)
-
-        # work on data from simulations
-        freshwaterFlux = dsIn.timeMonthly_avg_landIceFreshwaterFlux
-
-        restartFileName = \
-            mpasTimeSeriesTask.runStreams.readpath('restart')[0]
-
-        dsRestart = xarray.open_dataset(restartFileName)
-        areaCell = dsRestart.landIceFraction.isel(Time=0)*dsRestart.areaCell
-
-        mpasMeshName = config.get('input', 'mpasMeshName')
-        regionMaskDirectory = config.get('regions', 'regionMaskDirectory')
-
-        regionMaskFileName = '{}/{}_iceShelfMasks.nc'.format(
-                regionMaskDirectory, mpasMeshName)
-
-        dsRegionMask = xarray.open_dataset(regionMaskFileName)
-
-        # select only those regions we want to plot
-        dsRegionMask = dsRegionMask.isel(nRegions=self.regionIndices)
-        cellMasks = dsRegionMask.regionCellMasks
-
-        # convert from kg/s to kg/yr
-        totalMeltFlux = constants.sec_per_year * \
-            (cellMasks*areaCell*freshwaterFlux).sum(dim='nCells')
-
-        totalArea = (cellMasks*areaCell).sum(dim='nCells')
-
-        # from kg/m^2/yr to m/yr
-        meltRates = (1./constants.rho_fw) * (totalMeltFlux/totalArea)
-
-        # convert from kg/yr to GT/yr
-        totalMeltFlux /= constants.kg_per_GT
-
-        baseDirectory = build_config_full_path(
-            config, 'output', 'timeSeriesSubdirectory')
-
-        outFileName = '{}/iceShelfAggregatedFluxes.nc'.format(baseDirectory)
-
-        dsOut = xarray.Dataset()
-        dsOut['totalMeltFlux'] = totalMeltFlux
-        dsOut.totalMeltFlux.attrs['units'] = 'GT a$^{-1}$'
-        dsOut.totalMeltFlux.attrs['description'] = \
-            'Total melt flux summed over each ice shelf or region'
-        dsOut['meltRates'] = meltRates
-        dsOut.meltRates.attrs['units'] = 'm a$^{-1}$'
-        dsOut.meltRates.attrs['description'] = \
-            'Melt rate averaged over each ice shelf or region'
-
-        write_netcdf(dsOut, outFileName)
-
-        return totalMeltFlux, meltRates  # }}}
-
     def _load_ice_shelf_fluxes(self, config):  # {{{
         """
         Reads melt flux time series and computes regional total melt flux and
@@ -488,12 +376,135 @@ class TimeSeriesAntarcticMelt(AnalysisTask):
         baseDirectory = build_config_full_path(
             config, 'output', 'timeSeriesSubdirectory')
 
-        outFileName = '{}/{}'.format(baseDirectory, self.outFileName)
+        outFileName = '{}/{}.nc'.format(
+                baseDirectory, self.regionalStatsSubtask.timeSeriesName)
 
         dsOut = xarray.open_dataset(outFileName)
-        return dsOut.totalMeltFlux, dsOut.meltRates
-
+        return dsOut.totalMeltFlux, dsOut.meltRates  # }}}
 
 # }}}
+
+
+class RegionalStatsAntarcticMelt(MpasTimeSeriesRegionalStatsSubtask):  # {{{
+    """
+    A class for customizing the regional stats for Antarctic melt rates and
+    melt fluxes.
+    """
+
+    def customize_time_series_before_stats(self, dsTimeSeries, mpasVariables):
+        # {{{
+        """
+        Customize the time series by masking ``areaCell`` by
+        ``landIceFraction``
+
+        Parameters
+        dsTimeSeries
+        dsTimeSeries : ``xarray.Dataset```
+            The MPAS time series data set before regional stats have been
+            computed
+
+        mpasVariables : list of str
+            MPAS variables that were included in the time series
+
+        Returns
+        -------
+        dsTimeSeries : ``xarray.Dataset```
+            The same data set with any custom fields added or modifications
+            made
+
+        mpasVariables : list of str
+            A possibly modified list of MPAS variables on which to compute
+            stats
+
+        """
+        # Authors
+        # -------
+        # Xylar Asay-Davis
+
+        super(RegionalStatsAntarcticMelt,
+              self).customize_time_series_before_stats(dsTimeSeries,
+                                                       mpasVariables)
+
+        with xarray.open_dataset(self.restartFileName) as dsRestart:
+            varsToDrop = list(dsRestart.data_vars.keys())
+            varsToDrop.remove('landIceMask')
+            dsRestart = dsRestart.drop(varsToDrop)
+            dsRestart.load()
+            landIceFraction = dsRestart.landIceFraction.isel(Time=0)
+
+            dsTimeSeries['areaCell'] = landIceFraction*dsTimeSeries.areaCell
+
+        return dsTimeSeries, mpasVariables  # }}}
+
+    def customize_region_masks(self, dsRegionMasks):  # {{{
+        """
+        Cusomize the region mask to use only the requested ice shelf regions
+        rather than all ice shelves
+
+        Parameters
+        ----------
+        dsRegionMasks : ``xarray.Dataset```
+            The MPAS region masks data set
+
+        Returns
+        -------
+        dsRegionMasks : ``xarray.Dataset```
+            The same data set with any custom fields added or modifications
+            made
+        """
+        # Authors
+        # -------
+        # Xylar Asay-Davis
+
+        dsRegionMasks = dsRegionMasks.isel(
+                nRegions=self.parentTask.regionIndices)
+
+        return dsRegionMasks  # }}}
+
+    def customize_time_series_after_stats(self, dsTimeSeries):  # {{{
+        """
+        Modify the units of the resulting melt fluxes and melt rates.  Rename
+        the fields to more user-friendly names.  Add units and descriptions
+        for the fields.
+
+        Parameters
+        ----------
+        dsTimeSeries : ``xarray.Dataset```
+            The MPAS time series data set after regional stats have been
+            computed
+
+       Returns
+        -------
+        dsTimeSeries : ``xarray.Dataset```
+            The same data set with any custom fields added or modifications
+            made
+        """
+        # Authors
+        # -------
+        # Xylar Asay-Davis
+
+        dsTimeSeries = dsTimeSeries.rename(
+                {'timeMonthly_avg_landIceFreshwaterFluxSum': 'totalMeltFlux',
+                 'timeMonthly_avg_landIceFreshwaterFluxMean': 'meltRates'})
+
+        # convert from kg/s to GT/yr
+        dsTimeSeries['totalMeltFlux'] = \
+            constants.sec_per_year / constants.kg_per_GT * \
+            dsTimeSeries.totalMeltFlux
+
+        # from kg/m^2/yr to m/yr
+        dsTimeSeries['meltRates'] = \
+            constants.sec_per_year / constants.rho_fw * \
+            dsTimeSeries.meltRates
+
+        dsTimeSeries.totalMeltFlux.attrs['units'] = 'GT a$^{-1}$'
+        dsTimeSeries.totalMeltFlux.attrs['description'] = \
+            'Total melt flux summed over each ice shelf or region'
+        dsTimeSeries.meltRates.attrs['units'] = 'm a$^{-1}$'
+        dsTimeSeries.meltRates.attrs['description'] = \
+            'Melt rate averaged over each ice shelf or region'
+
+        return dsTimeSeries  # }}}
+    # }}}
 
 # vim: foldmethod=marker ai ts=4 sts=4 et sw=4 ft=python
