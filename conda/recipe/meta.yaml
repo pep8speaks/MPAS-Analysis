@@ -31,12 +31,11 @@ requirements:
         - python
         - numpy
         - scipy
-        - matplotlib <3.0.0|>=3.0.2
+        - matplotlib
         - netcdf4
         - xarray >=0.10.0
         - dask
         - bottleneck
-        - basemap <1.2.0|>1.2.0
         - lxml
         - nco >=4.7.0
         - pillow
@@ -46,6 +45,7 @@ requirements:
         - pyproj
         - setuptools
         - shapely
+        - cartopy
 
 about:
     home:  http://gitub.com/MPAS-Dev/MPAS-Analysis

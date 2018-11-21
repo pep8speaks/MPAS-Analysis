@@ -19,3 +19,4 @@ dependencies:
   - progressbar2
   - requests
   - shapely
+  - cartopy
